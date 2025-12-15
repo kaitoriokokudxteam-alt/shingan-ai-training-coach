@@ -5,6 +5,7 @@ import base64
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -55,7 +56,6 @@ def get_clients():
 
     gc = gspread.authorize(creds)
     drive = build("drive", "v3", credentials=creds)
-
     return gc, drive
 
 
@@ -131,34 +131,95 @@ def open_worksheets(gc, spreadsheet_id: str):
 
 
 # =========================
-# 入力クリア（判定者だけ残す）
+# ズームビューア（アプリ内で拡大・ドラッグ移動）
 # =========================
-def reset_form_keep_judge_person():
+def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 420):
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    html = f"""
+    <div style="font-family: sans-serif;">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+        <button id="zin" style="padding:6px 10px;">＋</button>
+        <button id="zout" style="padding:6px 10px;">－</button>
+        <button id="zreset" style="padding:6px 10px;">リセット</button>
+        <span style="opacity:0.8;">（ドラッグで移動 / ボタンで拡大）</span>
+      </div>
+
+      <div id="wrap" style="width:100%; height:{height}px; overflow:hidden; border-radius:12px; border:1px solid rgba(255,255,255,0.15); background:rgba(0,0,0,0.25); position:relative;">
+        <img id="img" src="data:{mimetype};base64,{b64}" style="transform-origin: 0 0; cursor:grab; user-select:none; -webkit-user-drag:none; position:absolute; left:0; top:0;" />
+      </div>
+    </div>
+
+    <script>
+      const img = document.getElementById("img");
+      const wrap = document.getElementById("wrap");
+      const zin = document.getElementById("zin");
+      const zout = document.getElementById("zout");
+      const zreset = document.getElementById("zreset");
+
+      let scale = 1.0;
+      let x = 0;
+      let y = 0;
+      let dragging = false;
+      let lastX = 0;
+      let lastY = 0;
+
+      function apply() {{
+        img.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+      }}
+
+      function reset() {{
+        scale = 1.0;
+        x = 0;
+        y = 0;
+        apply();
+      }}
+
+      zin.onclick = () => {{
+        scale = Math.min(scale * 1.25, 8);
+        apply();
+      }};
+      zout.onclick = () => {{
+        scale = Math.max(scale / 1.25, 1);
+        apply();
+      }};
+      zreset.onclick = () => reset();
+
+      wrap.addEventListener("mousedown", (e) => {{
+        dragging = true;
+        img.style.cursor = "grabbing";
+        lastX = e.clientX;
+        lastY = e.clientY;
+      }});
+      window.addEventListener("mouseup", () => {{
+        dragging = false;
+        img.style.cursor = "grab";
+      }});
+      window.addEventListener("mousemove", (e) => {{
+        if (!dragging) return;
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        x += dx;
+        y += dy;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        apply();
+      }});
+
+      // 初期表示
+      reset();
+    </script>
+    """
+    components.html(html, height=height + 80, scrolling=False)
+
+
+# =========================
+# 「次のアイテム」：判定者だけ残す（キーを丸ごと切り替える方式）
+# =========================
+def new_form_keep_judge_person():
     keep = st.session_state.get("judge_person", "")
-    keys_to_clear = []
-    for k in list(st.session_state.keys()):
-        # judge_person は残す
-        if k == "judge_person":
-            continue
-        # Streamlit内部キーっぽいものは触らない
-        if k.startswith("_"):
-            continue
-        keys_to_clear.append(k)
-
-    for k in keys_to_clear:
-        try:
-            del st.session_state[k]
-        except Exception:
-            pass
-
+    st.session_state["form_id"] = st.session_state.get("form_id", 0) + 1
     st.session_state["judge_person"] = keep
-    # 先頭に戻す
     st.rerun()
-
-
-def make_data_url(mimetype: str, data: bytes) -> str:
-    b64 = base64.b64encode(data).decode("utf-8")
-    return f"data:{mimetype};base64,{b64}"
 
 
 # =========================
@@ -167,22 +228,24 @@ def make_data_url(mimetype: str, data: bytes) -> str:
 st.set_page_config(page_title="COACH 育成中専用画面", layout="wide")
 st.title("COACH 真贋判定 - 育成中専用画面（Training Console）")
 
+# フォーム識別ID（これが増えると全部リセットされる）
+form_id = st.session_state.get("form_id", 0)
+
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.text_input("ブランド", value="COACH", disabled=True)
+    st.text_input("ブランド", value="COACH", disabled=True, key=f"{form_id}_brand")
 with col2:
-    item = st.selectbox("アイテム", ["バッグ", "財布"], key="item")
+    item = st.selectbox("アイテム", ["バッグ", "財布"], key=f"{form_id}_item")
 with col3:
     st.text_input("判定者（判定士名）", placeholder="例：柴田", key="judge_person")
 
-memo = st.text_area("メモ（任意）", placeholder="気づいたことがあれば", key="memo")
+memo = st.text_area("メモ（任意）", placeholder="気づいたことがあれば", key=f"{form_id}_memo")
 
 st.divider()
-
 st.subheader("写真（1〜4枚）")
 st.caption("※ 画像タイプは必須、同一タイプは1枚まで。最初は1枚だけでも保存できます。")
 
-img_count = st.number_input("登録する写真枚数", min_value=1, max_value=4, value=st.session_state.get("img_count", 1), step=1, key="img_count")
+img_count = st.number_input("登録する写真枚数", min_value=1, max_value=4, value=1, step=1, key=f"{form_id}_img_count")
 
 chosen_types = []
 images_payload = []
@@ -192,49 +255,43 @@ for i in range(int(img_count)):
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
 
     with c1:
-        uploaded = st.file_uploader(f"画像アップロード（写真{i+1}）", type=["jpg", "jpeg", "png"], key=f"up_{i}")
+        uploaded = st.file_uploader(
+            f"画像アップロード（写真{i+1}）",
+            type=["jpg", "jpeg", "png"],
+            key=f"{form_id}_up_{i}"
+        )
 
     with c2:
         available = [t for t in REQUIRED_IMAGE_TYPES if t not in chosen_types]
-        image_type = st.selectbox("画像タイプ（必須）", options=available, key=f"type_{i}")
+        image_type = st.selectbox("画像タイプ（必須）", options=available, key=f"{form_id}_type_{i}")
         chosen_types.append(image_type)
 
     with c3:
-        judge = st.selectbox("判定（必須）", ["基準内", "基準外", "判断つかず"], key=f"judge_{i}")
+        judge = st.selectbox("判定（必須）", ["基準内", "基準外", "判断つかず"], key=f"{form_id}_judge_{i}")
 
     with c4:
-        learn_yn = st.radio("学習（必須）", ["Yes", "No"], horizontal=True, key=f"learn_{i}")
+        learn_yn = st.radio("学習（必須）", ["Yes", "No"], horizontal=True, key=f"{form_id}_learn_{i}")
 
-    # ★画像プレビュー（ここが要望のポイント）
+    # ★プレビュー＆ズーム（アプリ内で拡大・ドラッグ）
     if uploaded is not None:
         file_bytes = uploaded.getvalue()
         mimetype = uploaded.type or "image/jpeg"
+        st.markdown("**プレビュー**")
+        st.image(file_bytes, use_container_width=True, caption=f"{image_type} / {uploaded.name}")
 
-        p1, p2 = st.columns([2, 1])
-        with p1:
-            st.markdown("**プレビュー**（クリックで確認しながら判定できます）")
-            st.image(file_bytes, use_container_width=True, caption=f"{image_type} / {uploaded.name}")
-        with p2:
-            st.markdown("**拡大**")
-            with st.expander("大きく表示（アプリ内）", expanded=False):
-                st.image(file_bytes, use_container_width=True)
-            data_url = make_data_url(mimetype, file_bytes)
-            st.markdown(
-                f'<a href="{data_url}" target="_blank">別タブで開く（ブラウザで拡大できます）</a>',
-                unsafe_allow_html=True
-            )
-            st.caption("※別タブなら Ctrl+ + / Ctrl+ホイール で拡大できます")
+        with st.expander("ズームして確認（アプリ内）", expanded=False):
+            zoom_viewer(file_bytes, mimetype=mimetype, height=420)
 
     reason_choices = st.multiselect(
         "判定理由（選択肢・複数OK）",
         options=REASON_CHOICES,
-        key=f"choices_{i}",
+        key=f"{form_id}_choices_{i}",
     )
-    reason_free = st.text_input("判定理由（自由記述）", key=f"free_{i}", placeholder="例：ピッチが5/7ではないため")
+    reason_free = st.text_input("判定理由（自由記述）", key=f"{form_id}_free_{i}", placeholder="例：ピッチが5/7ではないため")
 
     learn_no_reason = ""
     if learn_yn == "No":
-        learn_no_reason = st.selectbox("学習No理由（必須）", LEARN_NO_REASONS, key=f"no_reason_{i}")
+        learn_no_reason = st.selectbox("学習No理由（必須）", LEARN_NO_REASONS, key=f"{form_id}_no_reason_{i}")
         if "その他" in learn_no_reason:
             learn_no_reason += "：" + (reason_free or "（自由記述に補足してください）")
 
@@ -255,7 +312,7 @@ if int(img_count) >= 3:
     st.subheader("総合判定（写真3枚以上のとき）")
     oc1, oc2, oc3 = st.columns([1, 2, 1])
     with oc1:
-        overall_judge = st.selectbox("総合判定", ["基準内", "基準外", "判断つかず"], key="overall_j")
+        overall_judge = st.selectbox("総合判定", ["基準内", "基準外", "判断つかず"], key=f"{form_id}_overall_j")
     with oc2:
         overall_reason_choices = st.multiselect(
             "総合理由（選択肢・複数OK）",
@@ -266,15 +323,15 @@ if int(img_count) >= 3:
                 "複合的に判断（基準内要素が優勢）",
                 "複合的に判断（基準外要素が優勢）",
             ],
-            key="overall_choices",
+            key=f"{form_id}_overall_choices",
         )
     with oc3:
-        overall_learn_yn = st.radio("総合 学習", ["Yes", "No"], horizontal=True, key="overall_learn")
+        overall_learn_yn = st.radio("総合 学習", ["Yes", "No"], horizontal=True, key=f"{form_id}_overall_learn")
 
-    overall_reason_free = st.text_input("総合理由（自由記述）", key="overall_free", placeholder="例：馬車タグが基準内で、他は軽微のため")
+    overall_reason_free = st.text_input("総合理由（自由記述）", key=f"{form_id}_overall_free", placeholder="例：馬車タグが基準内で、他は軽微のため")
     overall_learn_no_reason = ""
     if overall_learn_yn == "No":
-        overall_learn_no_reason = st.selectbox("総合 学習No理由（必須）", LEARN_NO_REASONS, key="overall_no_reason")
+        overall_learn_no_reason = st.selectbox("総合 学習No理由（必須）", LEARN_NO_REASONS, key=f"{form_id}_overall_no_reason")
 
     overall = {
         "overall_judge": overall_judge,
@@ -286,9 +343,7 @@ if int(img_count) >= 3:
 
 st.divider()
 
-save_clicked = st.button("保存（Drive + Sheets）", type="primary")
-
-if save_clicked:
+if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"):
     judge_person = st.session_state.get("judge_person", "").strip()
     if not judge_person:
         st.error("判定者（判定士名）を入力してください。")
@@ -334,13 +389,13 @@ if save_clicked:
 
     if overall is None:
         ws_cases.append_row([
-            case_id, "COACH", item, judge_person, st.session_state.get("memo", ""),
+            case_id, "COACH", item, judge_person, memo,
             int(img_count), "", "", "",
             "", "", weight_version, created_at
         ])
     else:
         ws_cases.append_row([
-            case_id, "COACH", item, judge_person, st.session_state.get("memo", ""),
+            case_id, "COACH", item, judge_person, memo,
             int(img_count),
             overall["overall_judge"],
             overall["overall_reason_choices"],
@@ -352,14 +407,13 @@ if save_clicked:
         ])
 
     st.success(f"保存しました！ case_id = {case_id}")
-    st.info("Images / Cases シートに記録され、画像はDriveにアップロードされています。")
 
     st.markdown("### 次の操作")
-    if st.button("次のアイテムを真贋する（入力をクリア）"):
-        reset_form_keep_judge_person()
+    if st.button("次のアイテムを真贋する（入力をクリア）", key=f"{form_id}_next"):
+        new_form_keep_judge_person()
 
-# ★ふっかつの呪文 / バージョンはページ最下部へ
+# 管理用は最下部
 st.divider()
 with st.expander("ふっかつの呪文 / バージョン（管理用）", expanded=False):
-    st.markdown("**Ver：BV-COACH-MVP-3.1**")
-    st.markdown("**呪文：**「**いちばんしたにうつす・つぎぼたんでくりあ・がぞうぷれびゅー**」")
+    st.markdown("**Ver：BV-COACH-MVP-3.2**")
+    st.markdown("**呪文：**「**ふぉーむあいでぃーでりせっと・ずーむびゅーあー・じゅもんはさいご**」")
