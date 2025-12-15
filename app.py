@@ -132,84 +132,86 @@ def open_worksheets(gc, spreadsheet_id: str):
 
 # =========================
 # ズームビューア（アプリ内で拡大・ドラッグ移動）
+# ※Pythonのf-stringとJSの ${} が衝突しないよう「置換」で組む
 # =========================
 def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 420):
     b64 = base64.b64encode(image_bytes).decode("utf-8")
-    html = f"""
-    <div style="font-family: sans-serif;">
-      <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-        <button id="zin" style="padding:6px 10px;">＋</button>
-        <button id="zout" style="padding:6px 10px;">－</button>
-        <button id="zreset" style="padding:6px 10px;">リセット</button>
-        <span style="opacity:0.8;">（ドラッグで移動 / ボタンで拡大）</span>
-      </div>
 
-      <div id="wrap" style="width:100%; height:{height}px; overflow:hidden; border-radius:12px; border:1px solid rgba(255,255,255,0.15); background:rgba(0,0,0,0.25); position:relative;">
-        <img id="img" src="data:{mimetype};base64,{b64}" style="transform-origin: 0 0; cursor:grab; user-select:none; -webkit-user-drag:none; position:absolute; left:0; top:0;" />
-      </div>
-    </div>
+    html = r"""
+<div style="font-family: sans-serif;">
+  <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+    <button id="zin" style="padding:6px 10px;">＋</button>
+    <button id="zout" style="padding:6px 10px;">－</button>
+    <button id="zreset" style="padding:6px 10px;">リセット</button>
+    <span style="opacity:0.8;">（ドラッグで移動 / ボタンで拡大）</span>
+  </div>
 
-    <script>
-      const img = document.getElementById("img");
-      const wrap = document.getElementById("wrap");
-      const zin = document.getElementById("zin");
-      const zout = document.getElementById("zout");
-      const zreset = document.getElementById("zreset");
+  <div id="wrap" style="width:100%; height:__H__px; overflow:hidden; border-radius:12px; border:1px solid rgba(255,255,255,0.15); background:rgba(0,0,0,0.25); position:relative;">
+    <img id="img" src="data:__MIME__;base64,__B64__" style="transform-origin: 0 0; cursor:grab; user-select:none; -webkit-user-drag:none; position:absolute; left:0; top:0;" />
+  </div>
+</div>
 
-      let scale = 1.0;
-      let x = 0;
-      let y = 0;
-      let dragging = false;
-      let lastX = 0;
-      let lastY = 0;
+<script>
+  const img = document.getElementById("img");
+  const wrap = document.getElementById("wrap");
+  const zin = document.getElementById("zin");
+  const zout = document.getElementById("zout");
+  const zreset = document.getElementById("zreset");
 
-      function apply() {{
-        img.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
-      }}
+  let scale = 1.0;
+  let x = 0;
+  let y = 0;
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
 
-      function reset() {{
-        scale = 1.0;
-        x = 0;
-        y = 0;
-        apply();
-      }}
+  function apply() {
+    img.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+  }
 
-      zin.onclick = () => {{
-        scale = Math.min(scale * 1.25, 8);
-        apply();
-      }};
-      zout.onclick = () => {{
-        scale = Math.max(scale / 1.25, 1);
-        apply();
-      }};
-      zreset.onclick = () => reset();
+  function reset() {
+    scale = 1.0;
+    x = 0;
+    y = 0;
+    apply();
+  }
 
-      wrap.addEventListener("mousedown", (e) => {{
-        dragging = true;
-        img.style.cursor = "grabbing";
-        lastX = e.clientX;
-        lastY = e.clientY;
-      }});
-      window.addEventListener("mouseup", () => {{
-        dragging = false;
-        img.style.cursor = "grab";
-      }});
-      window.addEventListener("mousemove", (e) => {{
-        if (!dragging) return;
-        const dx = e.clientX - lastX;
-        const dy = e.clientY - lastY;
-        x += dx;
-        y += dy;
-        lastX = e.clientX;
-        lastY = e.clientY;
-        apply();
-      }});
+  zin.onclick = () => {
+    scale = Math.min(scale * 1.25, 8);
+    apply();
+  };
+  zout.onclick = () => {
+    scale = Math.max(scale / 1.25, 1);
+    apply();
+  };
+  zreset.onclick = () => reset();
 
-      // 初期表示
-      reset();
-    </script>
-    """
-    components.html(html, height=height + 80, scrolling=False)
+  wrap.addEventListener("mousedown", (e) => {
+    dragging = true;
+    img.style.cursor = "grabbing";
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+  window.addEventListener("mouseup", () => {
+    dragging = false;
+    img.style.cursor = "grab";
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    x += dx;
+    y += dy;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    apply();
+  });
+
+  reset();
+</script>
+"""
+    html = html.replace("__B64__", b64).replace("__MIME__", mimetype).replace("__H__", str(height))
+    components.html(html, height=height + 90, scrolling=False)
 
 
 # =========================
@@ -228,7 +230,6 @@ def new_form_keep_judge_person():
 st.set_page_config(page_title="COACH 育成中専用画面", layout="wide")
 st.title("COACH 真贋判定 - 育成中専用画面（Training Console）")
 
-# フォーム識別ID（これが増えると全部リセットされる）
 form_id = st.session_state.get("form_id", 0)
 
 col1, col2, col3 = st.columns(3)
@@ -249,6 +250,8 @@ img_count = st.number_input("登録する写真枚数", min_value=1, max_value=4
 
 chosen_types = []
 images_payload = []
+
+THUMB_WIDTH_PX = 280  # ★サムネは最大でもこの幅（画面の1/4くらいの感覚）
 
 for i in range(int(img_count)):
     st.markdown(f"### 写真 {i+1}")
@@ -272,15 +275,19 @@ for i in range(int(img_count)):
     with c4:
         learn_yn = st.radio("学習（必須）", ["Yes", "No"], horizontal=True, key=f"{form_id}_learn_{i}")
 
-    # ★プレビュー＆ズーム（アプリ内で拡大・ドラッグ）
+    # ★プレビューはサムネ（小さく）
     if uploaded is not None:
         file_bytes = uploaded.getvalue()
         mimetype = uploaded.type or "image/jpeg"
-        st.markdown("**プレビュー**")
-        st.image(file_bytes, use_container_width=True, caption=f"{image_type} / {uploaded.name}")
 
-        with st.expander("ズームして確認（アプリ内）", expanded=False):
-            zoom_viewer(file_bytes, mimetype=mimetype, height=420)
+        left, right = st.columns([1, 3])
+        with left:
+            st.markdown("**サムネ**")
+            st.image(file_bytes, width=THUMB_WIDTH_PX, caption=f"{image_type}")
+
+        with right:
+            with st.expander("ズームして確認（アプリ内）", expanded=False):
+                zoom_viewer(file_bytes, mimetype=mimetype, height=420)
 
     reason_choices = st.multiselect(
         "判定理由（選択肢・複数OK）",
@@ -412,8 +419,7 @@ if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"
     if st.button("次のアイテムを真贋する（入力をクリア）", key=f"{form_id}_next"):
         new_form_keep_judge_person()
 
-# 管理用は最下部
 st.divider()
 with st.expander("ふっかつの呪文 / バージョン（管理用）", expanded=False):
-    st.markdown("**Ver：BV-COACH-MVP-3.2**")
-    st.markdown("**呪文：**「**ふぉーむあいでぃーでりせっと・ずーむびゅーあー・じゅもんはさいご**」")
+    st.markdown("**Ver：BV-COACH-MVP-3.3**")
+    st.markdown("**呪文：**「**ずーむはちかん・さむねはにひゃくはちじゅう・えらーはけした**」")
