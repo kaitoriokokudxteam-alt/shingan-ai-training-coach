@@ -31,7 +31,6 @@ LEARN_NO_REASONS = [
     "その他（自由記述で補足）",
 ]
 
-# 画像タイプごとの判定理由（絞り込み）
 REASONS_BY_TYPE = {
     "ロゴ": [
         "ロゴ：フォント／配置／刻印が基準内",
@@ -63,14 +62,11 @@ def now_str() -> str:
 
 
 def init_state():
-    if "form_id" not in st.session_state:
-        st.session_state["form_id"] = 0
-    if "saved" not in st.session_state:
-        st.session_state["saved"] = False
-    if "last_case_id" not in st.session_state:
-        st.session_state["last_case_id"] = ""
-    if "scroll_top" not in st.session_state:
-        st.session_state["scroll_top"] = False
+    st.session_state.setdefault("form_id", 0)
+    st.session_state.setdefault("scroll_to_title", False)
+    st.session_state.setdefault("saved", False)
+    st.session_state.setdefault("last_case_id", "")
+    st.session_state.setdefault("show_saved_banner", False)
 
 
 def get_clients():
@@ -100,32 +96,20 @@ def ensure_folder(drive, name: str, parent_id: str) -> str:
     if files:
         return files[0]["id"]
 
-    metadata = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [parent_id],
-    }
-
-    folder = drive.files().create(
-        body=metadata,
-        fields="id",
-        supportsAllDrives=True,
-    ).execute()
-
+    metadata = {"name": name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]}
+    folder = drive.files().create(body=metadata, fields="id", supportsAllDrives=True).execute()
     return folder["id"]
 
 
 def upload_image_to_drive(drive, parent_folder_id: str, filename: str, data: bytes, mimetype: str):
     media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mimetype, resumable=False)
     file_metadata = {"name": filename, "parents": [parent_folder_id]}
-
     f = drive.files().create(
         body=file_metadata,
         media_body=media,
         fields="id, webViewLink",
         supportsAllDrives=True,
     ).execute()
-
     return f["id"], f.get("webViewLink", "")
 
 
@@ -153,16 +137,11 @@ def open_worksheets(gc, spreadsheet_id: str):
 
 
 def reason_options(image_type: str):
-    base = REASONS_BY_TYPE.get(image_type, [])
-    return base + [COMMON_REASON_ALWAYS]
+    return REASONS_BY_TYPE.get(image_type, []) + [COMMON_REASON_ALWAYS]
 
 
-# =========================
-# ズームビューア（アプリ内で拡大・ドラッグ移動）
-# =========================
 def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 650):
     b64 = base64.b64encode(image_bytes).decode("utf-8")
-
     html = r"""
 <div style="font-family: sans-serif;">
   <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
@@ -202,35 +181,18 @@ def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 650):
     apply();
   }
 
-  zin.onclick = () => {
-    scale = Math.min(scale * 1.25, 8);
-    apply();
-  };
-  zout.onclick = () => {
-    scale = Math.max(scale / 1.25, 1);
-    apply();
-  };
+  zin.onclick = () => { scale = Math.min(scale * 1.25, 8); apply(); };
+  zout.onclick = () => { scale = Math.max(scale / 1.25, 1); apply(); };
   zreset.onclick = () => reset();
 
   wrap.addEventListener("mousedown", (e) => {
-    dragging = true;
-    img.style.cursor = "grabbing";
-    lastX = e.clientX;
-    lastY = e.clientY;
+    dragging = true; img.style.cursor = "grabbing"; lastX = e.clientX; lastY = e.clientY;
   });
-  window.addEventListener("mouseup", () => {
-    dragging = false;
-    img.style.cursor = "grab";
-  });
+  window.addEventListener("mouseup", () => { dragging = false; img.style.cursor = "grab"; });
   window.addEventListener("mousemove", (e) => {
     if (!dragging) return;
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
-    x += dx;
-    y += dy;
-    lastX = e.clientX;
-    lastY = e.clientY;
-    apply();
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    x += dx; y += dy; lastX = e.clientX; lastY = e.clientY; apply();
   });
 
   reset();
@@ -240,16 +202,28 @@ def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 650):
     components.html(html, height=height + 90, scrolling=False)
 
 
-# =========================
-# 次のアイテム（完全リセット：判定者もクリア）
-# =========================
-def next_item_full_reset():
+# ★タイトル位置へ確実に戻す（最上部ではなく、タイトルが見える位置）
+def scroll_to_title():
+    components.html(
+        """
+        <script>
+          const el = document.getElementById("page_title_anchor");
+          if (el) { el.scrollIntoView({behavior: "instant", block: "start"}); }
+        </script>
+        """,
+        height=0,
+    )
+
+
+# ★次へ：判定者だけ残す／他を全部クリア／タイトルへ戻す
+def next_item_keep_judge_person():
+    keep = st.session_state.get("judge_person", "")
     st.session_state["form_id"] = st.session_state.get("form_id", 0) + 1
     st.session_state["saved"] = False
     st.session_state["last_case_id"] = ""
-    st.session_state["scroll_top"] = True
-    # 判定者もクリア（あなたの最新要望）
-    st.session_state["judge_person"] = ""
+    st.session_state["show_saved_banner"] = False
+    st.session_state["judge_person"] = keep  # ★ここが最重要：判定者だけ残す
+    st.session_state["scroll_to_title"] = True
     st.rerun()
 
 
@@ -260,25 +234,17 @@ init_state()
 
 st.set_page_config(page_title="COACH 育成中専用画面", layout="wide")
 
-# トップへ戻す（rerun後に実行）
-if st.session_state.get("scroll_top"):
-    components.html("<script>window.scrollTo(0,0);</script>", height=0)
-    st.session_state["scroll_top"] = False
+# スクロール指示があれば、タイトルへ戻す
+if st.session_state.get("scroll_to_title"):
+    scroll_to_title()
+    st.session_state["scroll_to_title"] = False
+
+# タイトルアンカー（ここへ戻す）
+components.html('<div id="page_title_anchor"></div>', height=0)
 
 st.title("COACH 真贋判定 - 育成中専用画面（Training Console）")
 
 form_id = st.session_state.get("form_id", 0)
-
-# 保存完了後の表示（ここは常に画面に存在する＝クリックが効く）
-if st.session_state.get("saved"):
-    st.success(f"保存しました！ case_id = {st.session_state.get('last_case_id')}")
-    cA, cB = st.columns([1, 3])
-    with cA:
-        if st.button("次のアイテムへ（入力を全クリア）", type="primary", key=f"{form_id}_go_next"):
-            next_item_full_reset()
-    with cB:
-        st.caption("※ 判定者（判定士名）も含めてクリアします。次の案件で再入力してください。")
-    st.divider()
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -296,10 +262,8 @@ st.caption("※ 画像タイプは必須、同一タイプは1枚まで。最初
 
 img_count = st.number_input("登録する写真枚数", min_value=1, max_value=4, value=1, step=1, key=f"{form_id}_img_count")
 
-# どの写真を「拡大表示」しているか（Noneなら通常）
 viewer_key = f"{form_id}_viewer_idx"
-if viewer_key not in st.session_state:
-    st.session_state[viewer_key] = None
+st.session_state.setdefault(viewer_key, None)
 
 chosen_types = []
 images_payload = []
@@ -330,9 +294,7 @@ for i in range(int(img_count)):
         file_bytes = uploaded.getvalue()
         mimetype = uploaded.type or "image/jpeg"
 
-        # ★サムネクリック風：ボタンで拡大表示に切替
         if st.session_state[viewer_key] == i:
-            # 拡大モード（サムネは隠す）
             topbar1, topbar2 = st.columns([1, 6])
             with topbar1:
                 if st.button("× 閉じる（サムネへ戻る）", key=f"{form_id}_close_{i}"):
@@ -340,9 +302,7 @@ for i in range(int(img_count)):
                     st.rerun()
             with topbar2:
                 st.markdown(f"**拡大表示：{image_type}**（横幅いっぱい）")
-
             zoom_viewer(file_bytes, mimetype=mimetype, height=ZOOM_HEIGHT_PX)
-
         else:
             left, right = st.columns([1, 3])
             with left:
@@ -351,11 +311,9 @@ for i in range(int(img_count)):
                 if st.button("サムネを拡大表示", key=f"{form_id}_open_{i}"):
                     st.session_state[viewer_key] = i
                     st.rerun()
-
             with right:
                 st.caption("拡大したい場合は「サムネを拡大表示」を押してください。")
 
-    # ★画像タイプに応じて、判定理由を絞り込み
     reason_choices = st.multiselect(
         "判定理由（選択肢・複数OK）",
         options=reason_options(image_type),
@@ -417,7 +375,7 @@ if int(img_count) >= 3:
 
 st.divider()
 
-# 保存ボタン（保存したら saved=True にして、次のアイテムボタンは「上の常設部分」で押せる）
+# 保存
 if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"):
     judge_person = st.session_state.get("judge_person", "").strip()
     if not judge_person:
@@ -438,7 +396,6 @@ if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"
 
     case_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     created_at = now_str()
-
     case_folder_id = ensure_folder(drive, case_id, drive_root_folder_id)
 
     for p in images_payload:
@@ -446,49 +403,41 @@ if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"
         file_bytes = up.getvalue()
         filename = f"{p['image_type']}_{up.name}"
         mimetype = up.type or "image/jpeg"
-
         file_id, view_url = upload_image_to_drive(drive, case_folder_id, filename, file_bytes, mimetype)
 
         ws_images.append_row([
-            case_id,
-            p["image_type"],
-            file_id,
-            view_url,
-            p["judge"],
-            p["reason_choices"],
-            p["reason_free"],
-            p["learn_yn"],
-            p["learn_no_reason"],
-            created_at,
+            case_id, p["image_type"], file_id, view_url,
+            p["judge"], p["reason_choices"], p["reason_free"],
+            p["learn_yn"], p["learn_no_reason"], created_at
         ])
 
     if overall is None:
         ws_cases.append_row([
             case_id, "COACH", item, judge_person, st.session_state.get(f"{form_id}_memo", ""),
-            int(img_count), "", "", "",
-            "", "", weight_version, created_at
+            int(img_count), "", "", "", "", "", weight_version, created_at
         ])
     else:
         ws_cases.append_row([
             case_id, "COACH", item, judge_person, st.session_state.get(f"{form_id}_memo", ""),
             int(img_count),
-            overall["overall_judge"],
-            overall["overall_reason_choices"],
-            overall["overall_reason_free"],
-            overall["overall_learn_yn"],
-            overall["overall_learn_no_reason"],
-            weight_version,
-            created_at
+            overall["overall_judge"], overall["overall_reason_choices"], overall["overall_reason_free"],
+            overall["overall_learn_yn"], overall["overall_learn_no_reason"],
+            weight_version, created_at
         ])
 
-    # ★保存後フラグを立てる（これで次のアイテムが確実に動く）
+    # 保存後は、下のボタンを表示させる（ただし位置は画面下）
     st.session_state["saved"] = True
     st.session_state["last_case_id"] = case_id
-    st.session_state["scroll_top"] = True
-    st.rerun()
+    st.session_state["show_saved_banner"] = True
 
-# 管理用は最下部
+# ★画面下：保存後に出る「次のアイテム」
+st.divider()
+if st.session_state.get("show_saved_banner"):
+    st.success(f"保存しました！ case_id = {st.session_state.get('last_case_id')}")
+    if st.button("次のアイテムに進む（判定者だけ残してクリア）", type="primary", key=f"{form_id}_next_bottom"):
+        next_item_keep_judge_person()
+
 st.divider()
 with st.expander("ふっかつの呪文 / バージョン（管理用）", expanded=False):
-    st.markdown("**Ver：BV-COACH-MVP-3.5**")
-    st.markdown("**呪文：**「**つぎぼたんじょうちゅう・ほぞんふらぐでうごく・さむねでぜんがめんずーむ**」")
+    st.markdown("**Ver：BV-COACH-MVP-3.6**")
+    st.markdown("**呪文：**「**つぎはしたにだす・はんていしゃはのこす・たいとるまでじゃんぷ**」")
