@@ -1,8 +1,7 @@
 # app.py
 import io
-import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import streamlit as st
 
@@ -15,25 +14,11 @@ from googleapiclient.http import MediaIoBaseUpload
 # =========================
 # 設定（st.secrets から読み込み）
 # =========================
-# Streamlit Cloud / secrets.toml の例：
-# [gcp_service_account]
-# type="service_account"
-# project_id="..."
-# private_key_id="..."
-# private_key="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-# client_email="xxxxx@xxxxx.iam.gserviceaccount.com"
-# client_id="..."
-# token_uri="https://oauth2.googleapis.com/token"
-#
-# [app]
-# spreadsheet_id="xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-# drive_root_folder_id="xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-# weight_version="COACH_v1.0"
-
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
+
 REQUIRED_IMAGE_TYPES = ["ロゴ", "馬車タグ", "製造国タグ", "YKK"]
 
 LEARN_NO_REASONS = [
@@ -45,14 +30,7 @@ LEARN_NO_REASONS = [
 ]
 
 
-def now_jst_str() -> str:
-    # JST = UTC+9
-    jst = timezone.utc
-    dt = datetime.now(timezone.utc).astimezone(timezone.utc)
-    # ここはUTC表示でもよいが、運用上はJSTが見やすいので +9 を加える
-    dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
-    # 表示はシンプルに ISO
+def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -60,22 +38,31 @@ def get_clients():
     sa_info = dict(st.secrets["gcp_service_account"])
     creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
 
-    # Sheets
     gc = gspread.authorize(creds)
-
-    # Drive
     drive = build("drive", "v3", credentials=creds)
 
     return gc, drive
 
 
 def ensure_folder(drive, name: str, parent_id: str) -> str:
-    # 同名フォルダがあればそれを使う（重複作成しない）
+    """
+    parent_id 配下に name のフォルダを作る（既にあればそれを返す）
+    Shared Drive配下でも動くよう supportsAllDrives を付ける
+    """
     q = (
-        f"mimeType='application/vnd.google-apps.folder' and "
-        f"name='{name}' and '{parent_id}' in parents and trashed=false"
+        "mimeType='application/vnd.google-apps.folder' and "
+        f"name='{name}' and "
+        f"'{parent_id}' in parents and "
+        "trashed=false"
     )
-    res = drive.files().list(q=q, fields="files(id,name)").execute()
+
+    res = drive.files().list(
+        q=q,
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True,
+    ).execute()
+
     files = res.get("files", [])
     if files:
         return files[0]["id"]
@@ -85,21 +72,35 @@ def ensure_folder(drive, name: str, parent_id: str) -> str:
         "mimeType": "application/vnd.google-apps.folder",
         "parents": [parent_id],
     }
-    folder = drive.files().create(body=metadata, fields="id").execute()
+
+    folder = drive.files().create(
+        body=metadata,
+        fields="id",
+        supportsAllDrives=True,
+    ).execute()
+
     return folder["id"]
 
 
 def upload_image_to_drive(drive, parent_folder_id: str, filename: str, data: bytes, mimetype: str):
+    """
+    画像をDriveにアップロード（Shared Drive対応）
+    """
     media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mimetype, resumable=False)
     file_metadata = {"name": filename, "parents": [parent_folder_id]}
-    f = drive.files().create(body=file_metadata, media_body=media, fields="id, webViewLink").execute()
+
+    f = drive.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id, webViewLink",
+        supportsAllDrives=True,
+    ).execute()
+
     return f["id"], f.get("webViewLink", "")
 
 
 def open_worksheets(gc, spreadsheet_id: str):
     sh = gc.open_by_key(spreadsheet_id)
-
-    # シートが無い場合は作る（最小限）
     titles = [ws.title for ws in sh.worksheets()]
 
     if "Cases" not in titles:
@@ -128,10 +129,9 @@ st.set_page_config(page_title="COACH 育成中専用画面", layout="wide")
 st.title("COACH 真贋判定 - 育成中専用画面（Training Console）")
 
 with st.expander("ふっかつの呪文 / バージョン", expanded=True):
-    st.markdown("**Ver：BV-COACH-MVP-1.5**")
-    st.markdown("**呪文：**「**すとりーむりっと・どらいぶあっぷ・しーつきろく・たんいとそうごう・さんまいからそうごう**」")
+    st.markdown("**Ver：BV-COACH-MVP-2.6**")
+    st.markdown("**呪文：**「**しぇあどらいぶたいおう・さぽーつおーるどらいぶす・ふぉるださくせいでとまらない**」")
 
-# ヘッダー
 col1, col2, col3 = st.columns(3)
 with col1:
     brand = st.text_input("ブランド", value="COACH", disabled=True)
@@ -147,10 +147,8 @@ st.divider()
 st.subheader("写真（1〜4枚）")
 st.caption("※ 画像タイプは必須、同一タイプは1枚まで。最初は1枚だけでも保存できます。")
 
-# 画像数
 img_count = st.number_input("登録する写真枚数", min_value=1, max_value=4, value=1, step=1)
 
-# 画像タイプの重複防止
 chosen_types = []
 images_payload = []
 
@@ -162,7 +160,6 @@ for i in range(int(img_count)):
         uploaded = st.file_uploader(f"画像アップロード（写真{i+1}）", type=["jpg", "jpeg", "png"], key=f"up_{i}")
 
     with c2:
-        # 選べるタイプ（既に選んだものは除外）
         available = [t for t in REQUIRED_IMAGE_TYPES if t not in chosen_types]
         image_type = st.selectbox("画像タイプ（必須）", options=available, key=f"type_{i}")
         chosen_types.append(image_type)
@@ -210,7 +207,6 @@ for i in range(int(img_count)):
 
     st.divider()
 
-# 総合判定（3枚以上で表示）
 overall = None
 if int(img_count) >= 3:
     st.subheader("総合判定（写真3枚以上のとき）")
@@ -247,36 +243,29 @@ if int(img_count) >= 3:
 
 st.divider()
 
-# 保存処理
 if st.button("保存（Drive + Sheets）", type="primary"):
-    # バリデーション
     if not judge_person.strip():
         st.error("判定者（判定士名）を入力してください。")
         st.stop()
 
-    # 画像のアップロードが空でないか確認（枚数分）
     for idx, p in enumerate(images_payload):
         if p["uploaded"] is None:
             st.error(f"写真{idx+1}の画像が未選択です。")
             st.stop()
 
-    # secrets
     spreadsheet_id = st.secrets["app"]["spreadsheet_id"]
     drive_root_folder_id = st.secrets["app"]["drive_root_folder_id"]
     weight_version = st.secrets["app"].get("weight_version", "COACH_v1.0")
 
-    # clients
     gc, drive = get_clients()
     ws_cases, ws_images = open_worksheets(gc, spreadsheet_id)
 
-    # case id
     case_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
-    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_at = now_str()
 
-    # case folder
+    # ★ここで Shared Drive 配下でもフォルダ作成できるようにしている
     case_folder_id = ensure_folder(drive, case_id, drive_root_folder_id)
 
-    # upload images + append images rows
     for p in images_payload:
         up = p["uploaded"]
         file_bytes = up.getvalue()
@@ -298,7 +287,6 @@ if st.button("保存（Drive + Sheets）", type="primary"):
             created_at,
         ])
 
-    # append case row
     if overall is None:
         ws_cases.append_row([
             case_id, brand, item, judge_person, memo,
