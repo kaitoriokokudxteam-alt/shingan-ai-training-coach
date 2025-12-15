@@ -31,19 +31,32 @@ LEARN_NO_REASONS = [
     "その他（自由記述で補足）",
 ]
 
-REASON_CHOICES = [
-    "ロゴ：フォント／配置／刻印が基準内",
-    "ロゴ：にじみ／ズレ／形状違い",
-    "馬車タグ：ピッチが5/7で基準内",
-    "馬車タグ：ピッチが基準外（5/7以外）",
-    "馬車タグ：キャビン形状が基準内",
-    "馬車タグ：キャビン形状が基準外",
-    "製造国タグ：印刷／フォントが自然",
-    "製造国タグ：にじみ／ズレ／フォント異常",
-    "YKK：刻印が深く均一",
-    "YKK：刻印が浅い／欠け／潰れ",
-    "判別不可（画像不鮮明）",
-]
+# 画像タイプごとの判定理由（絞り込み）
+REASONS_BY_TYPE = {
+    "ロゴ": [
+        "ロゴ：フォント／配置／刻印が基準内",
+        "ロゴ：にじみ／ズレ／形状違い",
+    ],
+    "馬車タグ": [
+        "馬車タグ：ピッチが5/7で基準内",
+        "馬車タグ：ピッチが基準外（5/7以外）",
+        "馬車タグ：キャビン形状が基準内",
+        "馬車タグ：キャビン形状が基準外",
+    ],
+    "製造国タグ": [
+        "製造国タグ：印刷／フォントが自然",
+        "製造国タグ：にじみ／ズレ／フォント異常",
+    ],
+    "YKK": [
+        "YKK：刻印が深く均一",
+        "YKK：刻印が浅い／欠け／潰れ",
+    ],
+}
+COMMON_REASON_ALWAYS = "判別不可（画像不鮮明）"
+
+
+THUMB_WIDTH_PX = 280       # サムネ幅（固定）
+ZOOM_HEIGHT_PX = 650       # ★ズーム枠の高さ（見やすさ優先）
 
 
 def now_str() -> str:
@@ -130,11 +143,16 @@ def open_worksheets(gc, spreadsheet_id: str):
     return sh.worksheet("Cases"), sh.worksheet("Images")
 
 
+def reason_options(image_type: str):
+    base = REASONS_BY_TYPE.get(image_type, [])
+    # 画像タイプに関係なく「判別不可」は出す
+    return base + [COMMON_REASON_ALWAYS]
+
+
 # =========================
 # ズームビューア（アプリ内で拡大・ドラッグ移動）
-# ※Pythonのf-stringとJSの ${} が衝突しないよう「置換」で組む
 # =========================
-def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 420):
+def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 650):
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     html = r"""
@@ -215,12 +233,13 @@ def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 420):
 
 
 # =========================
-# 「次のアイテム」：判定者だけ残す（キーを丸ごと切り替える方式）
+# 次のアイテム（判定者だけ残す）＋トップへ戻す
 # =========================
 def new_form_keep_judge_person():
     keep = st.session_state.get("judge_person", "")
     st.session_state["form_id"] = st.session_state.get("form_id", 0) + 1
     st.session_state["judge_person"] = keep
+    st.session_state["scroll_top"] = True  # ★トップへ戻すフラグ
     st.rerun()
 
 
@@ -228,6 +247,12 @@ def new_form_keep_judge_person():
 # UI
 # =========================
 st.set_page_config(page_title="COACH 育成中専用画面", layout="wide")
+
+# ★トップへ戻す（rerun後に実行される）
+if st.session_state.get("scroll_top"):
+    components.html("<script>window.scrollTo(0,0);</script>", height=0)
+    st.session_state["scroll_top"] = False
+
 st.title("COACH 真贋判定 - 育成中専用画面（Training Console）")
 
 form_id = st.session_state.get("form_id", 0)
@@ -251,8 +276,6 @@ img_count = st.number_input("登録する写真枚数", min_value=1, max_value=4
 chosen_types = []
 images_payload = []
 
-THUMB_WIDTH_PX = 280  # ★サムネは最大でもこの幅（画面の1/4くらいの感覚）
-
 for i in range(int(img_count)):
     st.markdown(f"### 写真 {i+1}")
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
@@ -275,7 +298,6 @@ for i in range(int(img_count)):
     with c4:
         learn_yn = st.radio("学習（必須）", ["Yes", "No"], horizontal=True, key=f"{form_id}_learn_{i}")
 
-    # ★プレビューはサムネ（小さく）
     if uploaded is not None:
         file_bytes = uploaded.getvalue()
         mimetype = uploaded.type or "image/jpeg"
@@ -284,14 +306,14 @@ for i in range(int(img_count)):
         with left:
             st.markdown("**サムネ**")
             st.image(file_bytes, width=THUMB_WIDTH_PX, caption=f"{image_type}")
-
         with right:
             with st.expander("ズームして確認（アプリ内）", expanded=False):
-                zoom_viewer(file_bytes, mimetype=mimetype, height=420)
+                zoom_viewer(file_bytes, mimetype=mimetype, height=ZOOM_HEIGHT_PX)
 
+    # ★画像タイプに応じて、判定理由を絞り込み
     reason_choices = st.multiselect(
         "判定理由（選択肢・複数OK）",
-        options=REASON_CHOICES,
+        options=reason_options(image_type),
         key=f"{form_id}_choices_{i}",
     )
     reason_free = st.text_input("判定理由（自由記述）", key=f"{form_id}_free_{i}", placeholder="例：ピッチが5/7ではないため")
@@ -396,13 +418,13 @@ if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"
 
     if overall is None:
         ws_cases.append_row([
-            case_id, "COACH", item, judge_person, memo,
+            case_id, "COACH", item, judge_person, st.session_state.get(f"{form_id}_memo", ""),
             int(img_count), "", "", "",
             "", "", weight_version, created_at
         ])
     else:
         ws_cases.append_row([
-            case_id, "COACH", item, judge_person, memo,
+            case_id, "COACH", item, judge_person, st.session_state.get(f"{form_id}_memo", ""),
             int(img_count),
             overall["overall_judge"],
             overall["overall_reason_choices"],
@@ -416,10 +438,10 @@ if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"
     st.success(f"保存しました！ case_id = {case_id}")
 
     st.markdown("### 次の操作")
-    if st.button("次のアイテムを真贋する（入力をクリア）", key=f"{form_id}_next"):
+    if st.button("次のアイテムを真贋する（入力クリア）", key=f"{form_id}_next"):
         new_form_keep_judge_person()
 
 st.divider()
 with st.expander("ふっかつの呪文 / バージョン（管理用）", expanded=False):
-    st.markdown("**Ver：BV-COACH-MVP-3.3**")
-    st.markdown("**呪文：**「**ずーむはちかん・さむねはにひゃくはちじゅう・えらーはけした**」")
+    st.markdown("**Ver：BV-COACH-MVP-3.4**")
+    st.markdown("**呪文：**「**ずーむたかさあっぷ・くりあしててっぺんにもどる・りゆうはたいぷでしぼる**」")
