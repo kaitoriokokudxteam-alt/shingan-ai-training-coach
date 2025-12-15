@@ -68,6 +68,9 @@ def init_state():
     st.session_state.setdefault("last_case_id", "")
     st.session_state.setdefault("show_saved_banner", False)
 
+    # ★判定者を保持する専用キー（ウィジェットkeyと分離するのがポイント）
+    st.session_state.setdefault("judge_person_keep", "")
+
 
 def get_clients():
     sa_info = dict(st.secrets["gcp_service_account"])
@@ -170,16 +173,8 @@ def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 650):
   let lastX = 0;
   let lastY = 0;
 
-  function apply() {
-    img.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
-  }
-
-  function reset() {
-    scale = 1.0;
-    x = 0;
-    y = 0;
-    apply();
-  }
+  function apply() { img.style.transform = `translate(${x}px, ${y}px) scale(${scale})`; }
+  function reset() { scale = 1.0; x = 0; y = 0; apply(); }
 
   zin.onclick = () => { scale = Math.min(scale * 1.25, 8); apply(); };
   zout.onclick = () => { scale = Math.max(scale / 1.25, 1); apply(); };
@@ -202,7 +197,6 @@ def zoom_viewer(image_bytes: bytes, mimetype: str, height: int = 650):
     components.html(html, height=height + 90, scrolling=False)
 
 
-# ★タイトル位置へ確実に戻す（最上部ではなく、タイトルが見える位置）
 def scroll_to_title():
     components.html(
         """
@@ -215,14 +209,14 @@ def scroll_to_title():
     )
 
 
-# ★次へ：判定者だけ残す／他を全部クリア／タイトルへ戻す
-def next_item_keep_judge_person():
-    keep = st.session_state.get("judge_person", "")
+def next_item_keep_judge_person(current_judge: str):
+    # ★保持キーに入れる（ウィジェットkeyとは別）
+    st.session_state["judge_person_keep"] = current_judge
+
     st.session_state["form_id"] = st.session_state.get("form_id", 0) + 1
     st.session_state["saved"] = False
     st.session_state["last_case_id"] = ""
     st.session_state["show_saved_banner"] = False
-    st.session_state["judge_person"] = keep  # ★ここが最重要：判定者だけ残す
     st.session_state["scroll_to_title"] = True
     st.rerun()
 
@@ -234,12 +228,10 @@ init_state()
 
 st.set_page_config(page_title="COACH 育成中専用画面", layout="wide")
 
-# スクロール指示があれば、タイトルへ戻す
 if st.session_state.get("scroll_to_title"):
     scroll_to_title()
     st.session_state["scroll_to_title"] = False
 
-# タイトルアンカー（ここへ戻す）
 components.html('<div id="page_title_anchor"></div>', height=0)
 
 st.title("COACH 真贋判定 - 育成中専用画面（Training Console）")
@@ -252,7 +244,14 @@ with col1:
 with col2:
     item = st.selectbox("アイテム", ["バッグ", "財布"], key=f"{form_id}_item")
 with col3:
-    st.text_input("判定者（判定士名）", placeholder="例：柴田", key="judge_person")
+    # ★フォームごとにkeyを変える（これでStreamlitAPIExceptionを回避）
+    judge_key = f"{form_id}_judge_person"
+    judge_person = st.text_input(
+        "判定者（判定士名）",
+        value=st.session_state.get("judge_person_keep", ""),
+        placeholder="例：柴田",
+        key=judge_key,
+    )
 
 memo = st.text_area("メモ（任意）", placeholder="気づいたことがあれば", key=f"{form_id}_memo")
 
@@ -375,10 +374,9 @@ if int(img_count) >= 3:
 
 st.divider()
 
-# 保存
 if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"):
-    judge_person = st.session_state.get("judge_person", "").strip()
-    if not judge_person:
+    judge_person_val = judge_person.strip()
+    if not judge_person_val:
         st.error("判定者（判定士名）を入力してください。")
         st.stop()
 
@@ -413,31 +411,30 @@ if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"
 
     if overall is None:
         ws_cases.append_row([
-            case_id, "COACH", item, judge_person, st.session_state.get(f"{form_id}_memo", ""),
+            case_id, "COACH", item, judge_person_val, st.session_state.get(f"{form_id}_memo", ""),
             int(img_count), "", "", "", "", "", weight_version, created_at
         ])
     else:
         ws_cases.append_row([
-            case_id, "COACH", item, judge_person, st.session_state.get(f"{form_id}_memo", ""),
+            case_id, "COACH", item, judge_person_val, st.session_state.get(f"{form_id}_memo", ""),
             int(img_count),
             overall["overall_judge"], overall["overall_reason_choices"], overall["overall_reason_free"],
             overall["overall_learn_yn"], overall["overall_learn_no_reason"],
             weight_version, created_at
         ])
 
-    # 保存後は、下のボタンを表示させる（ただし位置は画面下）
     st.session_state["saved"] = True
     st.session_state["last_case_id"] = case_id
     st.session_state["show_saved_banner"] = True
 
-# ★画面下：保存後に出る「次のアイテム」
+# 画面下に次のアイテム
 st.divider()
 if st.session_state.get("show_saved_banner"):
     st.success(f"保存しました！ case_id = {st.session_state.get('last_case_id')}")
     if st.button("次のアイテムに進む（判定者だけ残してクリア）", type="primary", key=f"{form_id}_next_bottom"):
-        next_item_keep_judge_person()
+        next_item_keep_judge_person(judge_person)
 
 st.divider()
 with st.expander("ふっかつの呪文 / バージョン（管理用）", expanded=False):
-    st.markdown("**Ver：BV-COACH-MVP-3.6**")
-    st.markdown("**呪文：**「**つぎはしたにだす・はんていしゃはのこす・たいとるまでじゃんぷ**」")
+    st.markdown("**Ver：BV-COACH-MVP-3.7**")
+    st.markdown("**呪文：**「**はんていしゃはべつきーでほぞん・つぎでえらーなし・たいとるへじゃんぷ**」")
