@@ -1,6 +1,7 @@
 # app.py
 import io
 import uuid
+import base64
 from datetime import datetime
 
 import streamlit as st
@@ -12,7 +13,7 @@ from googleapiclient.http import MediaIoBaseUpload
 
 
 # =========================
-# 設定（st.secrets から読み込み）
+# 設定
 # =========================
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -27,6 +28,20 @@ LEARN_NO_REASONS = [
     "基準未確定／判断が割れる",
     "テスト・検証用データ",
     "その他（自由記述で補足）",
+]
+
+REASON_CHOICES = [
+    "ロゴ：フォント／配置／刻印が基準内",
+    "ロゴ：にじみ／ズレ／形状違い",
+    "馬車タグ：ピッチが5/7で基準内",
+    "馬車タグ：ピッチが基準外（5/7以外）",
+    "馬車タグ：キャビン形状が基準内",
+    "馬車タグ：キャビン形状が基準外",
+    "製造国タグ：印刷／フォントが自然",
+    "製造国タグ：にじみ／ズレ／フォント異常",
+    "YKK：刻印が深く均一",
+    "YKK：刻印が浅い／欠け／潰れ",
+    "判別不可（画像不鮮明）",
 ]
 
 
@@ -45,10 +60,6 @@ def get_clients():
 
 
 def ensure_folder(drive, name: str, parent_id: str) -> str:
-    """
-    parent_id 配下に name のフォルダを作る（既にあればそれを返す）
-    Shared Drive配下でも動くよう supportsAllDrives を付ける
-    """
     q = (
         "mimeType='application/vnd.google-apps.folder' and "
         f"name='{name}' and "
@@ -83,9 +94,6 @@ def ensure_folder(drive, name: str, parent_id: str) -> str:
 
 
 def upload_image_to_drive(drive, parent_folder_id: str, filename: str, data: bytes, mimetype: str):
-    """
-    画像をDriveにアップロード（Shared Drive対応）
-    """
     media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mimetype, resumable=False)
     file_metadata = {"name": filename, "parents": [parent_folder_id]}
 
@@ -123,31 +131,58 @@ def open_worksheets(gc, spreadsheet_id: str):
 
 
 # =========================
+# 入力クリア（判定者だけ残す）
+# =========================
+def reset_form_keep_judge_person():
+    keep = st.session_state.get("judge_person", "")
+    keys_to_clear = []
+    for k in list(st.session_state.keys()):
+        # judge_person は残す
+        if k == "judge_person":
+            continue
+        # Streamlit内部キーっぽいものは触らない
+        if k.startswith("_"):
+            continue
+        keys_to_clear.append(k)
+
+    for k in keys_to_clear:
+        try:
+            del st.session_state[k]
+        except Exception:
+            pass
+
+    st.session_state["judge_person"] = keep
+    # 先頭に戻す
+    st.rerun()
+
+
+def make_data_url(mimetype: str, data: bytes) -> str:
+    b64 = base64.b64encode(data).decode("utf-8")
+    return f"data:{mimetype};base64,{b64}"
+
+
+# =========================
 # UI
 # =========================
 st.set_page_config(page_title="COACH 育成中専用画面", layout="wide")
 st.title("COACH 真贋判定 - 育成中専用画面（Training Console）")
 
-with st.expander("ふっかつの呪文 / バージョン", expanded=True):
-    st.markdown("**Ver：BV-COACH-MVP-2.6**")
-    st.markdown("**呪文：**「**しぇあどらいぶたいおう・さぽーつおーるどらいぶす・ふぉるださくせいでとまらない**」")
-
 col1, col2, col3 = st.columns(3)
 with col1:
-    brand = st.text_input("ブランド", value="COACH", disabled=True)
+    st.text_input("ブランド", value="COACH", disabled=True)
 with col2:
-    item = st.selectbox("アイテム", ["バッグ", "財布"])
+    item = st.selectbox("アイテム", ["バッグ", "財布"], key="item")
 with col3:
-    judge_person = st.text_input("判定者（判定士名）", placeholder="例：柴田")
+    st.text_input("判定者（判定士名）", placeholder="例：柴田", key="judge_person")
 
-memo = st.text_area("メモ（任意）", placeholder="気づいたことがあれば")
+memo = st.text_area("メモ（任意）", placeholder="気づいたことがあれば", key="memo")
 
 st.divider()
 
 st.subheader("写真（1〜4枚）")
 st.caption("※ 画像タイプは必須、同一タイプは1枚まで。最初は1枚だけでも保存できます。")
 
-img_count = st.number_input("登録する写真枚数", min_value=1, max_value=4, value=1, step=1)
+img_count = st.number_input("登録する写真枚数", min_value=1, max_value=4, value=st.session_state.get("img_count", 1), step=1, key="img_count")
 
 chosen_types = []
 images_payload = []
@@ -170,21 +205,29 @@ for i in range(int(img_count)):
     with c4:
         learn_yn = st.radio("学習（必須）", ["Yes", "No"], horizontal=True, key=f"learn_{i}")
 
+    # ★画像プレビュー（ここが要望のポイント）
+    if uploaded is not None:
+        file_bytes = uploaded.getvalue()
+        mimetype = uploaded.type or "image/jpeg"
+
+        p1, p2 = st.columns([2, 1])
+        with p1:
+            st.markdown("**プレビュー**（クリックで確認しながら判定できます）")
+            st.image(file_bytes, use_container_width=True, caption=f"{image_type} / {uploaded.name}")
+        with p2:
+            st.markdown("**拡大**")
+            with st.expander("大きく表示（アプリ内）", expanded=False):
+                st.image(file_bytes, use_container_width=True)
+            data_url = make_data_url(mimetype, file_bytes)
+            st.markdown(
+                f'<a href="{data_url}" target="_blank">別タブで開く（ブラウザで拡大できます）</a>',
+                unsafe_allow_html=True
+            )
+            st.caption("※別タブなら Ctrl+ + / Ctrl+ホイール で拡大できます")
+
     reason_choices = st.multiselect(
         "判定理由（選択肢・複数OK）",
-        options=[
-            "ロゴ：フォント／配置／刻印が基準内",
-            "ロゴ：にじみ／ズレ／形状違い",
-            "馬車タグ：ピッチが5/7で基準内",
-            "馬車タグ：ピッチが基準外（5/7以外）",
-            "馬車タグ：キャビン形状が基準内",
-            "馬車タグ：キャビン形状が基準外",
-            "製造国タグ：印刷／フォントが自然",
-            "製造国タグ：にじみ／ズレ／フォント異常",
-            "YKK：刻印が深く均一",
-            "YKK：刻印が浅い／欠け／潰れ",
-            "判別不可（画像不鮮明）",
-        ],
+        options=REASON_CHOICES,
         key=f"choices_{i}",
     )
     reason_free = st.text_input("判定理由（自由記述）", key=f"free_{i}", placeholder="例：ピッチが5/7ではないため")
@@ -243,8 +286,11 @@ if int(img_count) >= 3:
 
 st.divider()
 
-if st.button("保存（Drive + Sheets）", type="primary"):
-    if not judge_person.strip():
+save_clicked = st.button("保存（Drive + Sheets）", type="primary")
+
+if save_clicked:
+    judge_person = st.session_state.get("judge_person", "").strip()
+    if not judge_person:
         st.error("判定者（判定士名）を入力してください。")
         st.stop()
 
@@ -263,7 +309,6 @@ if st.button("保存（Drive + Sheets）", type="primary"):
     case_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     created_at = now_str()
 
-    # ★ここで Shared Drive 配下でもフォルダ作成できるようにしている
     case_folder_id = ensure_folder(drive, case_id, drive_root_folder_id)
 
     for p in images_payload:
@@ -289,13 +334,13 @@ if st.button("保存（Drive + Sheets）", type="primary"):
 
     if overall is None:
         ws_cases.append_row([
-            case_id, brand, item, judge_person, memo,
+            case_id, "COACH", item, judge_person, st.session_state.get("memo", ""),
             int(img_count), "", "", "",
             "", "", weight_version, created_at
         ])
     else:
         ws_cases.append_row([
-            case_id, brand, item, judge_person, memo,
+            case_id, "COACH", item, judge_person, st.session_state.get("memo", ""),
             int(img_count),
             overall["overall_judge"],
             overall["overall_reason_choices"],
@@ -308,3 +353,13 @@ if st.button("保存（Drive + Sheets）", type="primary"):
 
     st.success(f"保存しました！ case_id = {case_id}")
     st.info("Images / Cases シートに記録され、画像はDriveにアップロードされています。")
+
+    st.markdown("### 次の操作")
+    if st.button("次のアイテムを真贋する（入力をクリア）"):
+        reset_form_keep_judge_person()
+
+# ★ふっかつの呪文 / バージョンはページ最下部へ
+st.divider()
+with st.expander("ふっかつの呪文 / バージョン（管理用）", expanded=False):
+    st.markdown("**Ver：BV-COACH-MVP-3.1**")
+    st.markdown("**呪文：**「**いちばんしたにうつす・つぎぼたんでくりあ・がぞうぷれびゅー**」")
