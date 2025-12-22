@@ -21,7 +21,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-REQUIRED_IMAGE_TYPES = ["ロゴ", "馬車タグ", "製造国タグ", "YKK"]
+# ★IDEAL追加
+REQUIRED_IMAGE_TYPES = ["ロゴ", "馬車タグ", "製造国タグ", "YKK", "IDEAL"]
 
 LEARN_NO_REASONS = [
     "画像品質不良（ピント/反射/暗い）",
@@ -50,6 +51,7 @@ REASONS_BY_TYPE = {
         "YKK：刻印が深く均一",
         "YKK：刻印が浅い／欠け／潰れ",
     ],
+    # IDEALは基準未確定のため、選択肢理由は出さない（disabledで対応）
 }
 COMMON_REASON_ALWAYS = "判別不可（画像不鮮明）"
 
@@ -68,7 +70,7 @@ def init_state():
     st.session_state.setdefault("last_case_id", "")
     st.session_state.setdefault("show_saved_banner", False)
 
-    # ★判定者を保持する専用キー（ウィジェットkeyと分離するのがポイント）
+    # 判定者を保持する専用キー（ウィジェットkeyと分離）
     st.session_state.setdefault("judge_person_keep", "")
 
 
@@ -140,6 +142,7 @@ def open_worksheets(gc, spreadsheet_id: str):
 
 
 def reason_options(image_type: str):
+    # IDEALは基準未確定なので「選択肢を出さない」ためここは通常通り返しても使わない
     return REASONS_BY_TYPE.get(image_type, []) + [COMMON_REASON_ALWAYS]
 
 
@@ -210,7 +213,6 @@ def scroll_to_title():
 
 
 def next_item_keep_judge_person(current_judge: str):
-    # ★保持キーに入れる（ウィジェットkeyとは別）
     st.session_state["judge_person_keep"] = current_judge
 
     st.session_state["form_id"] = st.session_state.get("form_id", 0) + 1
@@ -244,7 +246,6 @@ with col1:
 with col2:
     item = st.selectbox("アイテム", ["バッグ", "財布"], key=f"{form_id}_item")
 with col3:
-    # ★フォームごとにkeyを変える（これでStreamlitAPIExceptionを回避）
     judge_key = f"{form_id}_judge_person"
     judge_person = st.text_input(
         "判定者（判定士名）",
@@ -278,8 +279,20 @@ for i in range(int(img_count)):
             key=f"{form_id}_up_{i}"
         )
 
+    # ★双方向排他：IDEALとYKKは共存しない
+    # - IDEALが既に選ばれていたら、以降はYKKを候補から消す
+    # - YKKが既に選ばれていたら、以降はIDEALを候補から消す
     with c2:
         available = [t for t in REQUIRED_IMAGE_TYPES if t not in chosen_types]
+        if "IDEAL" in chosen_types and "YKK" in available:
+            available.remove("YKK")
+        if "YKK" in chosen_types and "IDEAL" in available:
+            available.remove("IDEAL")
+
+        # 念のため：候補が空になった場合の保険（通常は起きない）
+        if not available:
+            available = [t for t in REQUIRED_IMAGE_TYPES if t not in chosen_types]
+
         image_type = st.selectbox("画像タイプ（必須）", options=available, key=f"{form_id}_type_{i}")
         chosen_types.append(image_type)
 
@@ -313,11 +326,24 @@ for i in range(int(img_count)):
             with right:
                 st.caption("拡大したい場合は「サムネを拡大表示」を押してください。")
 
-    reason_choices = st.multiselect(
-        "判定理由（選択肢・複数OK）",
-        options=reason_options(image_type),
-        key=f"{form_id}_choices_{i}",
-    )
+    # ★IDEALのとき：判定理由（選択肢）は選択不可
+    if image_type == "IDEAL":
+        st.caption("IDEALは現時点で鑑定ポイント未確定のため、選択肢理由は選べません（自由記述で記録してください）")
+        reason_choices = st.multiselect(
+            "判定理由（選択肢・複数OK）",
+            options=[],
+            key=f"{form_id}_choices_{i}",
+            disabled=True,
+        )
+        reason_choices_joined = ""
+    else:
+        reason_choices = st.multiselect(
+            "判定理由（選択肢・複数OK）",
+            options=reason_options(image_type),
+            key=f"{form_id}_choices_{i}",
+        )
+        reason_choices_joined = " / ".join(reason_choices)
+
     reason_free = st.text_input("判定理由（自由記述）", key=f"{form_id}_free_{i}", placeholder="例：ピッチが5/7ではないため")
 
     learn_no_reason = ""
@@ -330,7 +356,7 @@ for i in range(int(img_count)):
         "uploaded": uploaded,
         "image_type": image_type,
         "judge": judge,
-        "reason_choices": " / ".join(reason_choices),
+        "reason_choices": reason_choices_joined,
         "reason_free": reason_free,
         "learn_yn": learn_yn,
         "learn_no_reason": learn_no_reason,
@@ -338,9 +364,10 @@ for i in range(int(img_count)):
 
     st.divider()
 
+# ★総合判定：写真2枚以上で表示（3→2）
 overall = None
-if int(img_count) >= 3:
-    st.subheader("総合判定（写真3枚以上のとき）")
+if int(img_count) >= 2:
+    st.subheader("総合判定（写真2枚以上のとき）")
     oc1, oc2, oc3 = st.columns([1, 2, 1])
     with oc1:
         overall_judge = st.selectbox("総合判定", ["基準内", "基準外", "判断つかず"], key=f"{form_id}_overall_j")
@@ -427,7 +454,6 @@ if st.button("保存（Drive + Sheets）", type="primary", key=f"{form_id}_save"
     st.session_state["last_case_id"] = case_id
     st.session_state["show_saved_banner"] = True
 
-# 画面下に次のアイテム
 st.divider()
 if st.session_state.get("show_saved_banner"):
     st.success(f"保存しました！ case_id = {st.session_state.get('last_case_id')}")
@@ -436,5 +462,5 @@ if st.session_state.get("show_saved_banner"):
 
 st.divider()
 with st.expander("ふっかつの呪文 / バージョン（管理用）", expanded=False):
-    st.markdown("**Ver：BV-COACH-MVP-3.7**")
-    st.markdown("**呪文：**「**はんていしゃはべつきーでほぞん・つぎでえらーなし・たいとるへじゃんぷ**」")
+    st.markdown("**Ver：BV-COACH-MVP-3.9**")
+    st.markdown("**呪文：**「**そうごうはにまいから・IDEALついか・IDEALとYKKはそうほうこう・IDEALはりゆうせんたくなし**」")
